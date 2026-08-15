@@ -53,3 +53,27 @@ How it fits together: The apiserver module is the runtime entry point (Main.java
 
 
 * and launches an embedded Tomcat instance that delegates incoming HTTP requests to the Application routing layer.
+
+Other top-level modules (db, eventbus, objectstore, buildplate, staticdata) provide the persistence/transport and domain logic the apiserver depends on.
+
+# How to run it
+Shortest path (from a fresh clone) using the included Maven wrapper:
+
+1.Build:
+```
+./mvnw -DskipTests clean package
+```
+
+2.Run the apiserver module using the Main class (either with the exec plugin or by running the produced jar). Two common options:
+
+* Using Maven exec (runs straight from sources):
+```
+./mvnw -pl apiserver exec:java -Dexec.mainClass=micheal65536.vienna.apiserver.Main
+```
+* Or run the packaged jar (if apiserver produces an executable jar):
+```
+./mvnw -pl apiserver package
+java -cp apiserver/target/*:<other-module-targets-if-needed> micheal65536.vienna.apiserver.Main
+```
+
+Command-line options (seen in Main.java) — useful defaults:
