@@ -1,4 +1,6 @@
 **Summarized by GitHub Copilot**
+
+**Original:** https://github.com/Project-Genoa/Vienna
 # What this is?
 An opinionated Java microservice suite for the "Vienna" project — the repository contains an embedded-Tomcat API server (apiserver) that loads static data, connects to a local database, an event-bus, and an object store, and exposes JSON/API routes (signin, resource packs, authenticated endpoints). It appears targeted at backend developers running a local service and other modules in the repo provide supporting pieces (db, eventbus, objectstore, static data, generators).
 # Stack
@@ -33,3 +35,21 @@ tappablesgenerator/           generator utility (likely generates tappables/stat
 utils/                        shared utilities
 .gitignore
 ```
+How it fits together: The apiserver module is the runtime entry point (Main.java). On start it:
+
+* loads static data from a directory,
+
+
+* opens/connects to EarthDB,
+
+
+* creates clients for the event bus and object store,
+
+
+* constructs an Application and Router, registers subrouters (signin, authenticated, resource packs),
+
+
+* starts Buildplate-related background handling (BuildplateInstanceRequestHandler / BuildplateInstancesManager),
+
+
+* and launches an embedded Tomcat instance that delegates incoming HTTP requests to the Application routing layer.
