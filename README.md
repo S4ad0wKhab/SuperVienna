@@ -73,6 +73,8 @@ Shortest path (from a fresh clone) using the included Maven wrapper:
 * Or run the packaged jar (if apiserver produces an executable jar):
 ```
 ./mvnw -pl apiserver package
+```
+```
 java -cp apiserver/target/*:<other-module-targets-if-needed> micheal65536.vienna.apiserver.Main
 ```
 
