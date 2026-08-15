@@ -77,3 +77,19 @@ java -cp apiserver/target/*:<other-module-targets-if-needed> micheal65536.vienna
 ```
 
 Command-line options (seen in Main.java) — useful defaults:
+
+* --port <port> : HTTP port (default 8080)
+
+* --db <path> : Database path (default ./earth.db)
+
+* --staticData <dir> : Static data path (default ./data)
+
+* --eventbus <addr> : Event bus address (default localhost:5532)
+
+* --objectstore <addr> : Object store address (default localhost:5396)
+
+Notes:
+
+* The repository uses Maven with an included wrapper (mvnw), so you can build without a preinstalled Maven.
+
+* The apiserver expects other services/resources (DB file, event-bus, object-store) reachable at the configured addresses or running locally with the defaults.
