@@ -11,12 +11,26 @@ echo.
 
 start "Vienna Event Bus" cmd /k "mvnw.cmd -pl eventbus/server exec:java -Dexec.mainClass=micheal65536.vienna.eventbus.server.Main"
 
-echo Event Bus Server started.
+echo Event Bus process started.
 echo.
-echo Waiting for Event Bus...
-timeout /t 3 /nobreak >nul
+echo Waiting for Event Bus on port 5532...
+echo.
+
+:wait_eventbus
+powershell -NoProfile -Command "$tcp = New-Object System.Net.Sockets.TcpClient; try { $tcp.Connect('127.0.0.1',5532); $tcp.Close(); exit 0 } catch { exit 1 }" >nul 2>&1
+
+if errorlevel 1 (
+    echo Event Bus is not ready yet...
+    timeout /t 1 /nobreak >nul
+    goto wait_eventbus
+)
 
 echo.
+echo ================================
+echo Event Bus is READY!
+echo ================================
+echo.
+
 echo Starting Vienna API Server...
 echo.
 
@@ -26,6 +40,9 @@ echo.
 echo ================================
 echo Vienna Services Started
 echo ================================
+echo.
+echo Event Bus : 127.0.0.1:5532
+echo API Server: Starting...
 echo.
 echo Typing "off" will stop the operation.
 echo.
