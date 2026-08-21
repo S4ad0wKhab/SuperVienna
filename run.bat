@@ -1,5 +1,5 @@
 @echo off
-title Vienna API Server
+title Vienna Controller
 
 echo ================================
 echo Starting Vienna API Server...
