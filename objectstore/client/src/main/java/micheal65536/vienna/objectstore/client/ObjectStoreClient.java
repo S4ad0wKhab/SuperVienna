@@ -6,11 +6,13 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 import java.util.LinkedList;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.ReentrantLock;
 
 public class ObjectStoreClient
@@ -20,6 +22,7 @@ public class ObjectStoreClient
 	{
 		String[] parts = connectionString.split(":", 2);
 		String host = parts[0];
+
 		int port;
 		try
 		{
@@ -27,24 +30,63 @@ public class ObjectStoreClient
 		}
 		catch (NumberFormatException exception)
 		{
-			throw new IllegalArgumentException("Invalid port number \"%s\"".formatted(parts[1]));
+			throw new IllegalArgumentException(
+					"Invalid port number \"%s\"".formatted(parts[1])
+			);
 		}
+
 		if (port <= 0 || port > 65535)
 		{
 			throw new IllegalArgumentException("Port number out of range");
 		}
 
-		Socket socket;
-		try
+		/*
+		 * Wait for the Object Store server to become available.
+		 *
+		 * The server may still be starting when the API server
+		 * attempts to connect. Retry for up to 30 seconds.
+		 */
+		long deadline = System.nanoTime()
+				+ TimeUnit.SECONDS.toNanos(30);
+
+		IOException lastException = null;
+
+		while (System.nanoTime() < deadline)
 		{
-			socket = new Socket(host, port);
-		}
-		catch (IOException exception)
-		{
-			throw new ConnectException("Could not create socket", exception);
+			try
+			{
+				Socket socket = new Socket();
+				socket.connect(
+						new InetSocketAddress(host, port),
+						1000
+				);
+
+				return new ObjectStoreClient(socket);
+			}
+			catch (IOException exception)
+			{
+				lastException = exception;
+
+				try
+				{
+					Thread.sleep(250);
+				}
+				catch (InterruptedException interruptedException)
+				{
+					Thread.currentThread().interrupt();
+
+					throw new ConnectException(
+							"Interrupted while waiting for object store",
+							interruptedException
+					);
+				}
+			}
 		}
 
-		return new ObjectStoreClient(socket);
+		throw new ConnectException(
+				"Could not connect to object store within 30 seconds",
+				lastException
+		);
 	}
 
 	public static final class ConnectException extends ObjectStoreClientException
@@ -61,9 +103,12 @@ public class ObjectStoreClient
 	}
 
 	private final Socket socket;
-	private final LinkedBlockingQueue<Object> outgoingMessageQueue = new LinkedBlockingQueue<>();
+	private final LinkedBlockingQueue<Object> outgoingMessageQueue =
+			new LinkedBlockingQueue<>();
+
 	private final Thread outgoingThread;
 	private final Thread incomingThread;
+
 	private final ReentrantLock lock = new ReentrantLock(true);
 
 	private boolean closed = false;
@@ -82,9 +127,12 @@ public class ObjectStoreClient
 				for (; ; )
 				{
 					Object message = this.outgoingMessageQueue.take();
+
 					if (message instanceof String command)
 					{
-						outputStream.write(command.getBytes(StandardCharsets.US_ASCII));
+						outputStream.write(
+								command.getBytes(StandardCharsets.US_ASCII)
+						);
 					}
 					else if (message instanceof byte[] data)
 					{
@@ -94,18 +142,27 @@ public class ObjectStoreClient
 					{
 						throw new AssertionError();
 					}
+
+					outputStream.flush();
 				}
 			}
 			catch (InterruptedException exception)
 			{
-				// empty
+				// Thread interrupted while waiting for a message.
 			}
 			catch (IOException exception)
 			{
 				this.lock.lock();
-				this.closed = true;
-				this.lock.unlock();
+				try
+				{
+					this.closed = true;
+				}
+				finally
+				{
+					this.lock.unlock();
+				}
 			}
+
 			this.initiateClose();
 		});
 
@@ -114,76 +171,135 @@ public class ObjectStoreClient
 			try (InputStream inputStream = this.socket.getInputStream())
 			{
 				byte[] readBuffer = new byte[65536];
-				ByteArrayOutputStream byteArrayOutputStream = new ByteArrayOutputStream(128);
+
+				ByteArrayOutputStream byteArrayOutputStream =
+						new ByteArrayOutputStream(128);
+
 				String lastMessage = null;
 				int binaryReadLength = 0;
+
 				for (; ; )
 				{
 					this.lock.lock();
-					if (this.closed)
+
+					try
+					{
+						if (this.closed)
+						{
+							break;
+						}
+					}
+					finally
 					{
 						this.lock.unlock();
-						break;
 					}
-					this.lock.unlock();
 
 					int readLength = inputStream.read(readBuffer);
+
 					if (readLength > 0)
 					{
 						int startOffset = 0;
+
 						while (startOffset < readLength)
 						{
 							this.lock.lock();
-							if (this.closed)
+
+							try
+							{
+								if (this.closed)
+								{
+									break;
+								}
+							}
+							finally
 							{
 								this.lock.unlock();
-								break;
 							}
-							this.lock.unlock();
 
 							if (binaryReadLength > 0)
 							{
 								if (startOffset + binaryReadLength > readLength)
 								{
-									byteArrayOutputStream.write(readBuffer, startOffset, readLength - startOffset);
-									binaryReadLength -= readLength - startOffset;
-									startOffset += readLength - startOffset;
+									int length = readLength - startOffset;
+
+									byteArrayOutputStream.write(
+											readBuffer,
+											startOffset,
+											length
+									);
+
+									binaryReadLength -= length;
+									startOffset += length;
 								}
 								else
 								{
-									byteArrayOutputStream.write(readBuffer, startOffset, binaryReadLength);
-									if (!this.handleBinaryData(lastMessage, byteArrayOutputStream.toByteArray()))
+									byteArrayOutputStream.write(
+											readBuffer,
+											startOffset,
+											binaryReadLength
+									);
+
+									if (!this.handleBinaryData(
+											lastMessage,
+											byteArrayOutputStream.toByteArray()
+									))
 									{
 										this.initiateClose();
 										break;
 									}
+
 									lastMessage = null;
-									byteArrayOutputStream = new ByteArrayOutputStream(128);
+									byteArrayOutputStream =
+											new ByteArrayOutputStream(128);
+
 									startOffset += binaryReadLength;
 									binaryReadLength = 0;
 								}
 							}
 							else
 							{
-								for (int offset = startOffset; offset < readLength; offset++)
+								for (
+										int offset = startOffset;
+										offset < readLength;
+										offset++
+								)
 								{
 									if (readBuffer[offset] == '\n')
 									{
-										byteArrayOutputStream.write(readBuffer, startOffset, offset - startOffset);
-										lastMessage = byteArrayOutputStream.toString(StandardCharsets.US_ASCII);
-										binaryReadLength = this.handleMessage(lastMessage);
+										byteArrayOutputStream.write(
+												readBuffer,
+												startOffset,
+												offset - startOffset
+										);
+
+										lastMessage =
+												byteArrayOutputStream.toString(
+														StandardCharsets.US_ASCII
+												);
+
+										binaryReadLength =
+												this.handleMessage(lastMessage);
+
 										if (binaryReadLength == -1)
 										{
 											this.initiateClose();
 											break;
 										}
-										byteArrayOutputStream = new ByteArrayOutputStream(128);
+
+										byteArrayOutputStream =
+												new ByteArrayOutputStream(128);
+
 										startOffset = offset + 1;
 										break;
 									}
 									else if (offset == readLength - 1)
 									{
-										byteArrayOutputStream.write(readBuffer, startOffset, readLength - startOffset);
+										byteArrayOutputStream.write(
+												readBuffer,
+												startOffset,
+												readLength - startOffset
+										);
+
 										startOffset = readLength;
 									}
 								}
@@ -203,20 +319,48 @@ public class ObjectStoreClient
 			catch (IOException exception)
 			{
 				this.lock.lock();
-				this.closed = true;
-				this.lock.unlock();
+
+				try
+				{
+					this.closed = true;
+				}
+				finally
+				{
+					this.lock.unlock();
+				}
 			}
+
 			this.initiateClose();
 
 			this.lock.lock();
-			if (this.currentCommand != null)
+
+			try
 			{
-				this.currentCommand.completableFuture.complete(this.currentCommand.type == Command.Type.DELETE ? false : null);
-				this.currentCommand = null;
+				if (this.currentCommand != null)
+				{
+					this.currentCommand.completableFuture.complete(
+							this.currentCommand.type == Command.Type.DELETE
+									? false
+									: null
+					);
+
+					this.currentCommand = null;
+				}
+
+				this.queuedCommands.forEach(command ->
+						command.completableFuture.complete(
+								command.type == Command.Type.DELETE
+										? false
+										: null
+						)
+				);
+
+				this.queuedCommands.clear();
 			}
-			this.queuedCommands.forEach(command -> command.completableFuture.complete(command.type == Command.Type.DELETE ? false : null));
-			this.queuedCommands.clear();
-			this.lock.unlock();
+			finally
+			{
+				this.lock.unlock();
+			}
 		});
 
 		this.outgoingThread.start();
@@ -236,7 +380,7 @@ public class ObjectStoreClient
 			}
 			catch (InterruptedException exception)
 			{
-				// empty
+				// Keep waiting for the thread to terminate.
 			}
 		}
 
@@ -249,7 +393,7 @@ public class ObjectStoreClient
 			}
 			catch (InterruptedException exception)
 			{
-				// empty
+				// Keep waiting for the thread to terminate.
 			}
 		}
 	}
@@ -257,8 +401,15 @@ public class ObjectStoreClient
 	private void initiateClose()
 	{
 		this.lock.lock();
-		this.closed = true;
-		this.lock.unlock();
+
+		try
+		{
+			this.closed = true;
+		}
+		finally
+		{
+			this.lock.unlock();
+		}
 
 		try
 		{
@@ -266,7 +417,7 @@ public class ObjectStoreClient
 		}
 		catch (IOException exception)
 		{
-			// empty
+			// Ignore socket close failure.
 		}
 
 		this.outgoingThread.interrupt();
@@ -275,97 +426,163 @@ public class ObjectStoreClient
 	@NotNull
 	public CompletableFuture<String> store(byte[] data)
 	{
-		CompletableFuture<String> completableFuture = new CompletableFuture<>();
-		this.queueCommand(new Command(Command.Type.STORE, data, completableFuture));
+		CompletableFuture<String> completableFuture =
+				new CompletableFuture<>();
+
+		this.queueCommand(
+				new Command(
+						Command.Type.STORE,
+						data,
+						completableFuture
+				)
+		);
+
 		return completableFuture;
 	}
 
 	@NotNull
 	public CompletableFuture<byte[]> get(@NotNull String id)
 	{
-		CompletableFuture<byte[]> completableFuture = new CompletableFuture<>();
-		this.queueCommand(new Command(Command.Type.GET, id, completableFuture));
+		CompletableFuture<byte[]> completableFuture =
+				new CompletableFuture<>();
+
+		this.queueCommand(
+				new Command(
+						Command.Type.GET,
+						id,
+						completableFuture
+				)
+		);
+
 		return completableFuture;
 	}
 
 	@NotNull
 	public CompletableFuture<Boolean> delete(@NotNull String id)
 	{
-		CompletableFuture<Boolean> completableFuture = new CompletableFuture<>();
-		this.queueCommand(new Command(Command.Type.DELETE, id, completableFuture));
+		CompletableFuture<Boolean> completableFuture =
+				new CompletableFuture<>();
+
+		this.queueCommand(
+				new Command(
+						Command.Type.DELETE,
+						id,
+						completableFuture
+				)
+		);
+
 		return completableFuture;
 	}
 
 	private void queueCommand(@NotNull Command command)
 	{
 		this.lock.lock();
-		if (this.closed)
+
+		try
 		{
-			command.completableFuture.complete(command.type == Command.Type.DELETE ? false : null);
-		}
-		else
-		{
-			this.queuedCommands.add(command);
-			if (this.currentCommand == null)
+			if (this.closed)
 			{
-				this.sendNextCommand();
+				command.completableFuture.complete(
+						command.type == Command.Type.DELETE
+								? false
+								: null
+				);
+			}
+			else
+			{
+				this.queuedCommands.add(command);
+
+				if (this.currentCommand == null)
+				{
+					this.sendNextCommand();
+				}
 			}
 		}
-		this.lock.unlock();
+		finally
+		{
+			this.lock.unlock();
+		}
 	}
 
 	private void sendNextCommand()
 	{
 		this.lock.lock();
 
-		this.currentCommand = null;
-
-		if (this.closed)
+		try
 		{
-			this.lock.unlock();
-			return;
-		}
+			this.currentCommand = null;
 
-		if (!this.queuedCommands.isEmpty())
-		{
-			this.currentCommand = this.queuedCommands.removeFirst();
-			switch (this.currentCommand.type)
+			if (this.closed)
 			{
-				case STORE ->
+				return;
+			}
+
+			if (!this.queuedCommands.isEmpty())
+			{
+				this.currentCommand =
+						this.queuedCommands.removeFirst();
+
+				switch (this.currentCommand.type)
 				{
-					this.sendMessage("STORE " + Integer.toString(((byte[]) this.currentCommand.data).length) + "\n");
-					this.sendMessage(this.currentCommand.data);
-				}
-				case GET ->
-				{
-					this.sendMessage("GET " + ((String) this.currentCommand.data) + "\n");
-				}
-				case DELETE ->
-				{
-					this.sendMessage("DEL " + ((String) this.currentCommand.data) + "\n");
+					case STORE ->
+					{
+						this.sendMessage(
+								"STORE "
+										+ Integer.toString(
+												((byte[]) this.currentCommand.data).length
+										)
+										+ "\n"
+						);
+
+						this.sendMessage(
+								this.currentCommand.data
+						);
+					}
+
+					case GET ->
+					{
+						this.sendMessage(
+								"GET "
+										+ this.currentCommand.data
+										+ "\n"
+						);
+					}
+
+					case DELETE ->
+					{
+						this.sendMessage(
+								"DEL "
+										+ this.currentCommand.data
+										+ "\n"
+						);
+					}
 				}
 			}
 		}
-
-		this.lock.unlock();
+		finally
+		{
+			this.lock.unlock();
+		}
 	}
 
 	private int handleMessage(@NotNull String message)
 	{
+		this.lock.lock();
+
 		try
 		{
-			this.lock.lock();
-
 			if (this.closed)
 			{
 				return -1;
 			}
+
 			if (this.currentCommand == null)
 			{
 				return -1;
 			}
 
 			String[] parts = message.split(" ", 2);
+
 			switch (this.currentCommand.type)
 			{
 				case STORE ->
@@ -376,21 +593,26 @@ public class ObjectStoreClient
 						{
 							return -1;
 						}
-						this.currentCommand.completableFuture.complete(parts[1]);
+
+						this.currentCommand.completableFuture.complete(
+								parts[1]
+						);
+
 						this.sendNextCommand();
+
 						return 0;
 					}
 					else if (parts[0].equals("ERR"))
 					{
 						this.currentCommand.completableFuture.complete(null);
 						this.sendNextCommand();
+
 						return 0;
 					}
-					else
-					{
-						return -1;
-					}
+
+					return -1;
 				}
+
 				case GET ->
 				{
 					if (parts[0].equals("OK"))
@@ -399,23 +621,28 @@ public class ObjectStoreClient
 						{
 							return -1;
 						}
+
 						try
 						{
 							int length = Integer.parseInt(parts[1]);
+
 							if (length < 0)
 							{
 								return -1;
 							}
+
 							if (length == 0)
 							{
-								this.currentCommand.completableFuture.complete(new byte[0]);
+								this.currentCommand.completableFuture.complete(
+										new byte[0]
+								);
+
 								this.sendNextCommand();
+
 								return 0;
 							}
-							else
-							{
-								return length;
-							}
+
+							return length;
 						}
 						catch (NumberFormatException exception)
 						{
@@ -426,32 +653,33 @@ public class ObjectStoreClient
 					{
 						this.currentCommand.completableFuture.complete(null);
 						this.sendNextCommand();
+
 						return 0;
 					}
-					else
-					{
-						return -1;
-					}
+
+					return -1;
 				}
+
 				case DELETE ->
 				{
 					if (parts[0].equals("OK"))
 					{
 						this.currentCommand.completableFuture.complete(true);
 						this.sendNextCommand();
+
 						return 0;
 					}
 					else if (parts[0].equals("ERR"))
 					{
 						this.currentCommand.completableFuture.complete(false);
 						this.sendNextCommand();
+
 						return 0;
 					}
-					else
-					{
-						return -1;
-					}
+
+					return -1;
 				}
+
 				default ->
 				{
 					throw new AssertionError();
@@ -464,22 +692,27 @@ public class ObjectStoreClient
 		}
 	}
 
-	private boolean handleBinaryData(@NotNull String message, byte[] data)
+	private boolean handleBinaryData(
+			@NotNull String message,
+			byte[] data
+	)
 	{
+		this.lock.lock();
+
 		try
 		{
-			this.lock.lock();
-
 			if (this.closed)
 			{
 				return false;
 			}
+
 			if (this.currentCommand == null)
 			{
 				throw new AssertionError();
 			}
 
 			String[] parts = message.split(" ", 2);
+
 			if (parts.length != 2)
 			{
 				throw new AssertionError();
@@ -493,13 +726,13 @@ public class ObjectStoreClient
 					{
 						this.currentCommand.completableFuture.complete(data);
 						this.sendNextCommand();
+
 						return true;
 					}
-					else
-					{
-						throw new AssertionError();
-					}
+
+					throw new AssertionError();
 				}
+
 				default ->
 				{
 					throw new AssertionError();
@@ -514,9 +747,10 @@ public class ObjectStoreClient
 
 	private void sendMessage(@NotNull Object message)
 	{
+		this.lock.lock();
+
 		try
 		{
-			this.lock.lock();
 			if (this.closed)
 			{
 				throw new AssertionError();
@@ -536,7 +770,11 @@ public class ObjectStoreClient
 			}
 			catch (InterruptedException exception)
 			{
-				// empty
+				// Keep waiting unless the client is being closed.
+				if (this.closed)
+				{
+					return;
+				}
 			}
 		}
 	}
@@ -554,7 +792,11 @@ public class ObjectStoreClient
 			DELETE
 		}
 
-		public Command(Type type, Object data, CompletableFuture completableFuture)
+		public Command(
+				Type type,
+				Object data,
+				CompletableFuture completableFuture
+		)
 		{
 			this.type = type;
 			this.data = data;
