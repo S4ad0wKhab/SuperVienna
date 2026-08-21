@@ -13,7 +13,7 @@ REM ========================================
 echo Starting Object Store Server...
 echo.
 
-start "Vienna Object Store" cmd /k "mvnw.cmd -pl objectstore/server exec:java -Dexec.mainClass=micheal65536.vienna.objectstore.server.Main -Dexec.args=\"--dataDir data\""
+start "Vienna Object Store" cmd /k mvnw.cmd -pl objectstore/server exec:java -Dexec.mainClass=micheal65536.vienna.objectstore.server.Main "-Dexec.args=--dataDir data"
 
 echo Object Store process started.
 echo.
@@ -42,7 +42,7 @@ REM ========================================
 echo Starting Event Bus Server...
 echo.
 
-start "Vienna Event Bus" cmd /k "mvnw.cmd -pl eventbus/server exec:java -Dexec.mainClass=micheal65536.vienna.eventbus.server.Main"
+start "Vienna Event Bus" cmd /k mvnw.cmd -pl eventbus/server exec:java -Dexec.mainClass=micheal65536.vienna.eventbus.server.Main
 
 echo Event Bus process started.
 echo.
@@ -71,7 +71,7 @@ REM ========================================
 echo Starting Vienna API Server...
 echo.
 
-start "Vienna API Server" cmd /k "mvnw.cmd -pl apiserver exec:java -Dexec.mainClass=micheal65536.vienna.apiserver.Main"
+start "Vienna API Server" cmd /k mvnw.cmd -pl apiserver exec:java -Dexec.mainClass=micheal65536.vienna.apiserver.Main
 
 echo.
 echo ================================
