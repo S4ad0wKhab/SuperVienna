@@ -13,7 +13,7 @@ REM ========================================
 echo Starting Object Store Server...
 echo.
 
-start "Vienna Object Store" cmd /k mvnw.cmd -pl objectstore/server exec:java -Dexec.mainClass=micheal65536.vienna.objectstore.server.Main "-Dexec.args=--dataDir data"
+start "Vienna Object Store" cmd /k mvnw.cmd -pl objectstore/server exec:java -Dexec.mainClass=micheal65536.vienna.objectstore.server.Main "-Dexec.args=--data-dir data"
 
 echo Object Store process started.
 echo.
